@@ -3,6 +3,7 @@ export interface Order {
   orderId: string
   campusId: string
   shopId: number
+  storeCategory: string
   customerName: string
   customerMobile: number
   customerAddress: string
@@ -34,6 +35,8 @@ export interface Vendor {
   notes: string
   totalOrders: number
   completedOrders: number
+  lat: number | null
+  lng: number | null
 }
 
 export interface Settlement {
@@ -161,12 +164,6 @@ export interface EarningsDaily {
   bonus: number
 }
 
-export interface AnalyticsSummary {
-  today: PeriodStats
-  week: PeriodStats
-  month: PeriodStats
-}
-
 export interface PeriodStats {
   totalOrders: number
   completedOrders: number
@@ -174,8 +171,17 @@ export interface PeriodStats {
   ourRevenue: number
   commission: number
   deliveryFees: number
+  platformFees: number
+  taxes: number
   avgDeliveryTime: number | null
   avgOrderValue: number
+}
+
+export interface AnalyticsSummary {
+  period: PeriodStats
+  today: PeriodStats
+  week: PeriodStats
+  month: PeriodStats
 }
 
 export interface DailyOrder {
@@ -209,4 +215,54 @@ export interface Region {
   regionName: string
   displayName: string
   regionEnabled: boolean
+}
+
+export interface PricingConfig {
+  serviceType: string
+  configKey: string
+  actualValue: number
+  expectedValue: number
+  isActive: boolean
+}
+
+export interface DateDetail {
+  date: string
+  totalOrders: number
+  completedOrders: number
+  cancelledOrders: number
+  totalGmv: number
+  ourRevenue: number
+  commission: number
+  deliveryFees: number
+  platformFees: number
+  taxes: number
+  avgOrderValue: number
+  hourlyBreakdown: { hour: number; orders: number; completed: number }[]
+}
+
+export interface LiveMapOrder {
+  orderId: string
+  state: string
+  customerName: string
+  customerAddress: string
+  lat: number | null
+  lng: number | null
+  creationTime: string | null
+  shopId: number
+  vendorName: string
+  totalAmount: number
+  paymentMethod: string
+  totalItemCount: number
+  orderDescription: string
+  vendorLat: number | null
+  vendorLng: number | null
+}
+
+export interface LiveMapSummary {
+  pending: number
+  accepted: number
+  packed: number
+  shipped: number
+  total: number
+  withCoordinates: number
 }

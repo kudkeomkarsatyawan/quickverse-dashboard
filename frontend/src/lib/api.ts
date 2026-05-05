@@ -13,10 +13,18 @@ export const verifyOtp = (phone: string, otp: string, verificationId: string) =>
 export const fetchRegions = () =>
   api.get('/auth/regions').then(r => r.data.regions)
 
+// ─── Pricing configs ─────────────────────────────────────────────────
+
+export const fetchPricingConfigs = (serviceType: string = 'FOOD') =>
+  api.get('/pricing-configs', { params: { service_type: serviceType } }).then(r => r.data.configs)
+
 // ─── Orders ──────────────────────────────────────────────────────────
 
 export const syncOrders = (regionId: string, sessionKey: string, timeRange?: string) =>
   api.post('/orders/sync', { regionId, sessionKey, timeRange: timeRange || 'LAST_1_MONTH' }).then(r => r.data)
+
+export const getSyncStatus = () =>
+  api.get('/orders/sync-status').then(r => r.data)
 
 export const fetchOrders = (params: Record<string, string | number | undefined>) =>
   api.get('/orders', { params }).then(r => r.data)
@@ -34,6 +42,9 @@ export const fetchVendors = () =>
 
 export const updateVendor = (vendorId: string, data: { custom_commission_percent?: number; notes?: string }) =>
   api.put(`/vendors/${vendorId}`, data).then(r => r.data)
+
+export const updateVendorLocation = (vendorId: string, lat: number, lng: number) =>
+  api.put(`/vendors/${vendorId}/location`, { lat, lng }).then(r => r.data)
 
 // ─── Settlements ─────────────────────────────────────────────────────
 
@@ -57,7 +68,10 @@ export const updateSettlement = (id: number, data: { adjustments?: number; adjus
 export const deleteSettlement = (id: number) =>
   api.delete(`/settlements/${id}`).then(r => r.data)
 
-// ─── Delivery Persons ────────────────────────────────────────────────
+export const clearTillToday = (vendorId: string) =>
+  api.post(`/settlements/clear-till-today/${vendorId}`).then(r => r.data)
+
+// ─── Delivery persons ────────────────────────────────────────────────
 
 export const fetchDeliveryPersons = () =>
   api.get('/delivery-persons').then(r => r.data.deliveryPersons)
@@ -100,20 +114,31 @@ export const bulkMarkAttendance = () =>
 
 // ─── Analytics ───────────────────────────────────────────────────────
 
-export const fetchAnalyticsSummary = () =>
-  api.get('/analytics/summary').then(r => r.data)
+export const fetchAnalyticsSummary = (days: number = 30) =>
+  api.get('/analytics/summary', { params: { days } }).then(r => r.data)
 
-export const fetchDailyOrders = (days: number = 30) =>
-  api.get('/analytics/daily-orders', { params: { days } }).then(r => r.data.dailyOrders)
+export const fetchDailyOrders = (days: number = 30, exactDate?: string) =>
+  api.get('/analytics/daily-orders', {
+    params: exactDate ? { exact_date: exactDate } : { days },
+  }).then(r => r.data.dailyOrders)
 
-export const fetchPeakHours = () =>
-  api.get('/analytics/peak-hours').then(r => r.data.peakHours)
+export const fetchDateDetail = (targetDate: string) =>
+  api.get('/analytics/date-detail', { params: { target_date: targetDate } }).then(r => r.data)
 
-export const fetchVendorRanking = () =>
-  api.get('/analytics/vendor-ranking').then(r => r.data.vendorRanking)
+export const fetchPeakHours = (dateFrom?: string, dateTo?: string) =>
+  api.get('/analytics/peak-hours', {
+    params: { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) },
+  }).then(r => r.data.peakHours)
 
-export const fetchPaymentSplit = () =>
-  api.get('/analytics/payment-split').then(r => r.data)
+export const fetchVendorRanking = (dateFrom?: string, dateTo?: string) =>
+  api.get('/analytics/vendor-ranking', {
+    params: { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) },
+  }).then(r => r.data.vendorRanking)
+
+export const fetchPaymentSplit = (dateFrom?: string, dateTo?: string) =>
+  api.get('/analytics/payment-split', {
+    params: { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) },
+  }).then(r => r.data)
 
 // ─── Config ──────────────────────────────────────────────────────────
 
@@ -122,3 +147,8 @@ export const fetchConfig = () =>
 
 export const updateConfig = (key: string, value: string) =>
   api.put(`/config/${key}`, { value }).then(r => r.data)
+
+// ─── Live Map ────────────────────────────────────────────────────────
+
+export const fetchLiveMapOrders = () =>
+  api.get('/orders/live-map').then(r => r.data)

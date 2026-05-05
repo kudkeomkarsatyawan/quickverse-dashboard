@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { fetchOrders, fetchVendors, fetchDeliveryPersons, assignDelivery } from '../lib/api'
-import type { Order, Vendor, DeliveryPerson } from '../lib/types'
+import { fetchOrders, fetchVendors, fetchDeliveryPersons, assignDelivery, fetchPricingConfigs } from '../lib/api'
+import type { Order, Vendor, DeliveryPerson, PricingConfig } from '../lib/types'
 
 const STATUS_BADGE: Record<string, string> = {
   PENDING:   'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
@@ -21,6 +21,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [vendors, setVendors] = useState<Vendor[]>([])
   const [deliveryPersons, setDeliveryPersons] = useState<DeliveryPerson[]>([])
+  const [pricingConfigs, setPricingConfigs] = useState<{ food: PricingConfig[]; grocery: PricingConfig[] }>({ food: [], grocery: [] })
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
@@ -32,6 +33,18 @@ export default function OrdersPage() {
   const [todayActive, setTodayActive] = useState(false)
   const [statusSlab, setStatusSlab] = useState('ALL')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [elapsedMinutes, setElapsedMinutes] = useState<number | null>(null)
+
+  // Recalculate elapsed time whenever a different order is opened; ticks every 30s
+  useEffect(() => {
+    if (!selectedOrder?.creationTime) { setElapsedMinutes(null); return }
+    const calc = () => {
+      setElapsedMinutes(Math.max(0, Math.floor((Date.now() - new Date(selectedOrder.creationTime!).getTime()) / 60000)))
+    }
+    calc()
+    const timer = setInterval(calc, 30_000)
+    return () => clearInterval(timer)
+  }, [selectedOrder])
 
   const vendorMap = Object.fromEntries(vendors.map(v => [v.vendorId, v.vendorName]))
 
@@ -59,11 +72,38 @@ export default function OrdersPage() {
   useEffect(() => { fetchVendors().then(setVendors).catch(() => {}) }, [])
   useEffect(() => { fetchDeliveryPersons().then(setDeliveryPersons).catch(() => {}) }, [])
   useEffect(() => { loadOrders() }, [loadOrders])
+  useEffect(() => {
+    Promise.all([fetchPricingConfigs('FOOD'), fetchPricingConfigs('GROCERY')])
+      .then(([food, grocery]) => setPricingConfigs({ food, grocery }))
+      .catch(() => {})
+  }, [])
 
   const handleSearch = () => { setPage(1); loadOrders() }
 
   const handleAssignDelivery = async (orderId: string, dpId: number) => {
     try { await assignDelivery(orderId, dpId); loadOrders(); setSelectedOrder(null) } catch {}
+  }
+
+  const getCfg = (isGrocery: boolean, key: string): number => {
+    const list = isGrocery ? pricingConfigs.grocery : pricingConfigs.food
+    const found = list.find(c => c.configKey === key)
+    if (found) return found.actualValue
+    if (key === 'DELIVERY_CHARGE') return isGrocery ? 17 : 20
+    if (key === 'PLATFORM_FEE')    return isGrocery ? 3  : 5
+    if (key === 'COMMISSION')      return isGrocery ? 2  : 10
+    return 18
+  }
+
+  const calcBreakdown = (order: Order) => {
+    const isGrocery  = (order.storeCategory || '').toLowerCase().includes('grocery')
+    const subTotal   = order.amountExclDelivery
+    const delivery   = getCfg(isGrocery, 'DELIVERY_CHARGE')
+    const platform   = getCfg(isGrocery, 'PLATFORM_FEE')
+    const commission = Math.round(subTotal * getCfg(isGrocery, 'COMMISSION')) / 100
+    const taxable    = commission + delivery + platform
+    const taxes      = Math.round(taxable * getCfg(isGrocery, 'SERVICE_TAX')) / 100
+    const total      = subTotal + delivery + platform + taxes
+    return { subTotal, delivery, platform, commission, taxes, total }
   }
 
   const formatDate = (d: string | null) => {
@@ -169,7 +209,7 @@ export default function OrdersPage() {
                   </td>
                   <td className="p-3 text-ink-secondary">{vendorMap[String(o.shopId)] || `#${o.shopId}`}</td>
                   <td className="p-3 text-ink-secondary text-xs max-w-[150px] truncate">{o.orderDescription || `${o.totalItemCount} items`}</td>
-                  <td className="p-3 text-right font-medium text-ink font-mono">{fmtRs(o.totalAmount)}</td>
+                  <td className="p-3 text-right font-medium text-ink font-mono">{fmtRs(calcBreakdown(o).total)}</td>
                   <td className="p-3 text-center">
                     <span className={`qv-badge ${o.paymentMethod === 'COD' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400'}`}>
                       {o.paymentMethod === 'COD' ? 'Cash' : 'Prepaid'}
@@ -220,7 +260,7 @@ export default function OrdersPage() {
                   ['Customer', selectedOrder.customerName], ['Phone', selectedOrder.customerMobile],
                   ['Vendor', vendorMap[String(selectedOrder.shopId)] || `#${selectedOrder.shopId}`],
                   ['Payment', selectedOrder.paymentMethod === 'COD' ? 'Cash' : 'Prepaid'],
-                  ['Amount', fmtRs(selectedOrder.totalAmount)], ['Delivery Fee', fmtRs(selectedOrder.deliveryFee)],
+                  ['Category', selectedOrder.storeCategory || '—'], ['Status', selectedOrder.state],
                 ].map(([l, v]) => (
                   <div key={l}>
                     <p className="text-2xs text-ink-tertiary uppercase tracking-wider mb-0.5">{l}</p>
@@ -228,6 +268,34 @@ export default function OrdersPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Price Breakdown */}
+              {(() => {
+                const bd = calcBreakdown(selectedOrder)
+                return (
+                  <div className="border-t border-line pt-3">
+                    <p className="qv-label mb-2">Price Breakdown</p>
+                    <div className="space-y-1.5">
+                      {[
+                        ['Sub Total',         fmtRs(bd.subTotal),   false],
+                        ['Delivery Fee',      fmtRs(bd.delivery),   false],
+                        ['Platform Fee',      fmtRs(bd.platform),   false],
+                        ['Packaging',         fmtRs(0),             false],
+                        ['GST / Taxes (18%)', fmtRs(bd.taxes),      false],
+                      ].map(([l, v]) => (
+                        <div key={String(l)} className="flex justify-between text-xs">
+                          <span className="text-ink-secondary">{l}</span>
+                          <span className="text-ink font-mono">{v}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-between text-sm font-semibold pt-1.5 border-t border-line">
+                        <span className="text-ink">Total</span>
+                        <span className="text-ink font-mono">{fmtRs(bd.total)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
 
               {selectedOrder.orderItems.length > 0 && (
                 <div className="border-t border-line pt-3">
@@ -244,6 +312,11 @@ export default function OrdersPage() {
               <div className="border-t border-line pt-3 space-y-1">
                 <p className="qv-label mb-1.5">Timeline</p>
                 <p className="text-ink-secondary">Placed: {formatDate(selectedOrder.creationTime)}</p>
+                {elapsedMinutes !== null && (
+                  <p className={`text-xs font-semibold ${elapsedMinutes > 20 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
+                    Elapsed: {elapsedMinutes} min{elapsedMinutes !== 1 ? 's' : ''}
+                  </p>
+                )}
                 {selectedOrder.acceptedDate && <p className="text-ink-secondary">Accepted: {formatDate(selectedOrder.acceptedDate)}</p>}
                 {selectedOrder.completedDate && <p className="text-green-600 dark:text-green-400">Completed: {formatDate(selectedOrder.completedDate)}</p>}
                 {selectedOrder.rejectedDate && <p className="text-red-600 dark:text-red-400">Rejected: {formatDate(selectedOrder.rejectedDate)}</p>}

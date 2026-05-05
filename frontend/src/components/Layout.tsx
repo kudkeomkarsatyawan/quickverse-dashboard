@@ -1,13 +1,15 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../lib/store'
-import { syncOrders, syncVendors } from '../lib/api'
+import { syncOrders, syncVendors, getSyncStatus } from '../lib/api'
 import { useState, useEffect } from 'react'
 
 const navItems = [
   { to: '/orders', label: 'Orders', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' },
   { to: '/settlements', label: 'Settlements', icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { to: '/vendors', label: 'Vendors', icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4' },
   { to: '/analytics', label: 'Analytics', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
   { to: '/delivery', label: 'Delivery', icon: 'M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0' },
+  { to: '/live-map', label: 'Live Map', icon: 'M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z M15 11a3 3 0 11-6 0 3 3 0 016 0z' },
 ]
 
 function useTheme() {
@@ -28,18 +30,32 @@ export default function Layout() {
   const [syncMsg, setSyncMsg] = useState('')
   const { dark, toggle: toggleTheme } = useTheme()
 
-  const handleSync = async () => {
-    if (!token || !regionId) return
+  const handleSync = async (timeRange: string = 'LAST_1_MONTH') => {
+    if (!token || !regionId || syncing) return
     setSyncing(true)
-    setSyncMsg('')
+    setSyncMsg(timeRange === 'TODAY' ? 'Fetching today...' : 'Syncing...')
     try {
-      const vendorResult = await syncVendors(regionId)
-      const orderResult = await syncOrders(regionId, token)
-      setSyncMsg(`Synced ${orderResult.synced} orders, ${vendorResult.synced} vendors`)
-      setTimeout(() => setSyncMsg(''), 4000)
+      const [vendorResult] = await Promise.all([
+        syncVendors(regionId),
+        syncOrders(regionId, token, timeRange),
+      ])
+      const poll = setInterval(async () => {
+        try {
+          const status = await getSyncStatus()
+          if (!status.running) {
+            clearInterval(poll)
+            setSyncing(false)
+            if (status.result) {
+              setSyncMsg(`Synced ${status.result.synced} orders, ${vendorResult.synced} vendors`)
+            } else if (status.error) {
+              setSyncMsg(`Sync failed: ${status.error}`)
+            }
+            setTimeout(() => setSyncMsg(''), 5000)
+          }
+        } catch { clearInterval(poll); setSyncing(false) }
+      }, 2000)
     } catch (e: any) {
       setSyncMsg(`Sync failed: ${e.response?.data?.detail || e.message}`)
-    } finally {
       setSyncing(false)
     }
   }
@@ -47,6 +63,17 @@ export default function Layout() {
   const handleLogout = () => {
     logout()
     navigate('/login')
+  }
+
+  const handleDebug = async () => {
+    if (!token || !regionId) { alert('Not logged in'); return }
+    try {
+      const res = await fetch(`/api/debug/raw-orders?region_id=${encodeURIComponent(regionId)}&session_key=${encodeURIComponent(token)}&time_range=TODAY`)
+      const data = await res.json()
+      alert(JSON.stringify(data, null, 2))
+    } catch (e: any) {
+      alert('Debug failed: ' + e.message)
+    }
   }
 
   return (
@@ -100,13 +127,26 @@ export default function Layout() {
 
           {/* Sync */}
           <button
-            onClick={handleSync}
+            onClick={() => handleSync('TODAY')}
             disabled={syncing}
             className="w-full qv-btn text-xs disabled:opacity-40"
           >
-            {syncing ? 'Syncing...' : 'Sync Orders'}
+            {syncing ? 'Syncing...' : 'Sync Latest Orders'}
+          </button>
+          <button
+            onClick={() => handleSync('LAST_1_MONTH')}
+            disabled={syncing}
+            className="w-full qv-btn-ghost text-xs disabled:opacity-40"
+          >
+            Sync All (1 Month)
           </button>
           {syncMsg && <p className="text-2xs text-green-600 dark:text-green-400 px-1">{syncMsg}</p>}
+          <button
+            onClick={handleDebug}
+            className="w-full text-left px-3 py-1.5 rounded text-2xs text-ink-tertiary hover:text-ink-secondary hover:bg-accent-soft transition-colors"
+          >
+            Debug API Response
+          </button>
 
           {/* User */}
           <div className="px-1 pt-1">

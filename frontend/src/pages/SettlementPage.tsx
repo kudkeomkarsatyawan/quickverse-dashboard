@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   fetchSettlements, fetchVendorSummary, calculateSettlement,
-  markSettled, deleteSettlement, updateVendor, fetchOrders
+  markSettled, deleteSettlement, updateVendor, fetchOrders, clearTillToday
 } from '../lib/api'
 import type { Settlement, Order } from '../lib/types'
 
@@ -89,6 +89,33 @@ export default function SettlementPage() {
     await updateVendor(selectedVendor, { custom_commission_percent: editCommission ? parseFloat(editCommission) : undefined, notes: editNotes })
     setEditingVendor(false); load()
   }
+  const handleClearTillToday = async () => {
+    if (!selectedVendor) return
+    if (!confirm('Create a settlement for all outstanding orders and mark as settled immediately?')) return
+    try {
+      await clearTillToday(selectedVendor)
+      load()
+    } catch (e: any) {
+      alert(e.response?.data?.detail || 'Failed to clear')
+    }
+  }
+
+  const handleViewOutstandingOrders = async () => {
+    if (!sv) return
+    const start = sv.clearedTill
+      ? (() => { const d = new Date(sv.clearedTill); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0] })()
+      : (() => { const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().split('T')[0] })()
+    const displayPeriodEnd = new Date().toISOString().split('T')[0]
+    setViewOrdersSettlement({ vendorId: sv.vendorId, periodStart: start, periodEnd: displayPeriodEnd } as Settlement)
+    setSettlementOrders([])
+    setOrdersLoading(true)
+    try {
+      const data = await fetchOrders({ vendor_id: sv.vendorId, date_from: start, per_page: 500 })
+      setSettlementOrders(data.orders)
+    } catch {}
+    setOrdersLoading(false)
+  }
+
   const selectVendor = (vid: string) => {
     setSelectedVendor(vid); setView('status'); setEditingVendor(false)
     const v = vendorSummaries.find(x => x.vendorId === vid)
@@ -195,8 +222,9 @@ export default function SettlementPage() {
                       <MiniStat label="Our Cut" value={fmt(sv.remainingEarnings)} highlight="green" />
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => setView('create')} className="qv-btn text-xs">+ Create Settlement</button>
-                      <button onClick={() => handleViewOrders({ vendorId: sv.vendorId, periodStart: sv.clearedTill ? (() => { const d = new Date(sv.clearedTill); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0] })() : (() => { const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().split('T')[0] })(), periodEnd: new Date().toISOString().split('T')[0] } as Settlement)} className="qv-btn-secondary text-xs">View Orders</button>
+                      <button onClick={handleClearTillToday} className="qv-btn text-xs">Clear till today</button>
+                      <button onClick={() => setView('create')} className="qv-btn-secondary text-xs">+ Create Settlement</button>
+                      <button onClick={handleViewOutstandingOrders} className="qv-btn-ghost text-xs">View Orders</button>
                       {historyList.length > 0 && <button onClick={() => setView(view === 'history' ? 'status' : 'history')} className="qv-btn-ghost text-xs">{view === 'history' ? 'Hide' : `History (${historyList.length})`}</button>}
                     </div>
                   </>

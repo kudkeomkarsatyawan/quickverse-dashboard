@@ -6,6 +6,8 @@ import OrdersPage from './pages/OrdersPage'
 import SettlementPage from './pages/SettlementPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import DeliveryPage from './pages/DeliveryPage'
+import LiveMapPage from './pages/LiveMapPage'
+import VendorsPage from './pages/VendorsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore(s => s.token)
@@ -21,8 +23,10 @@ export default function App() {
         <Route index element={<Navigate to="/orders" replace />} />
         <Route path="orders" element={<OrdersPage />} />
         <Route path="settlements" element={<SettlementPage />} />
+        <Route path="vendors" element={<VendorsPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="delivery" element={<DeliveryPage />} />
+        <Route path="live-map" element={<LiveMapPage />} />
       </Route>
     </Routes>
   )

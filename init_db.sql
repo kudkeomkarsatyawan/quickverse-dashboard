@@ -1,9 +1,34 @@
--- Quickverse Dashboard - Database Initialization
--- Run: psql -U postgres -f init_db.sql
+-- Quickverse Dashboard — Database Initialization
+-- Run this once: psql -U postgres -f init_db.sql
+--
+-- What this script does:
+--   1. Creates a dedicated app user (quickverse_user / quickverse_pass)
+--   2. Creates the quickverse database owned by that user
+--   3. Creates all tables, indexes, and seed config rows
+--
+-- After running this, copy .env.example to .env — no edits needed.
 
-CREATE DATABASE quickverse;
+-- ── 1. Create app user (idempotent) ────────────────────────────────
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM pg_catalog.pg_roles WHERE rolname = 'quickverse_user'
+    ) THEN
+        CREATE USER quickverse_user WITH PASSWORD 'quickverse_pass';
+    END IF;
+END
+$$;
+
+-- ── 2. Create database ──────────────────────────────────────────────
+-- If the database already exists this will error — that is intentional.
+-- To start fresh: psql -U postgres -c "DROP DATABASE IF EXISTS quickverse;"
+CREATE DATABASE quickverse OWNER quickverse_user;
 
 \c quickverse;
+
+GRANT ALL PRIVILEGES ON DATABASE quickverse TO quickverse_user;
+
+-- ── 3. Tables ───────────────────────────────────────────────────────
 
 -- Vendors (synced from admin deck + our custom fields)
 CREATE TABLE vendors (
@@ -15,6 +40,8 @@ CREATE TABLE vendors (
     store_category VARCHAR(100) DEFAULT '',
     custom_commission_percent DECIMAL(5,2),
     notes TEXT DEFAULT '',
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -113,20 +140,24 @@ CREATE TABLE app_config (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Default config
+-- ── 4. Seed config ──────────────────────────────────────────────────
 INSERT INTO app_config (config_key, config_value, description) VALUES
-    ('default_commission_percent', '10', 'Default commission % for vendors'),
+    ('default_commission_percent', '10',   'Default commission % for vendors'),
     ('default_delivery_fee_paise', '2000', 'Default delivery fee in paise (Rs 20)'),
-    ('default_platform_fee_paise', '0', 'Platform fee in paise (Rs 0 for now)');
+    ('default_platform_fee_paise', '0',    'Platform fee in paise (Rs 0 for now)');
 
--- Indexes
-CREATE INDEX idx_order_cache_shop_id ON order_cache(shop_id);
-CREATE INDEX idx_order_cache_state ON order_cache(state);
-CREATE INDEX idx_order_cache_creation_time ON order_cache(creation_time);
-CREATE INDEX idx_order_cache_payment_method ON order_cache(payment_method);
+-- ── 5. Indexes ──────────────────────────────────────────────────────
+CREATE INDEX idx_order_cache_shop_id         ON order_cache(shop_id);
+CREATE INDEX idx_order_cache_state           ON order_cache(state);
+CREATE INDEX idx_order_cache_creation_time   ON order_cache(creation_time);
+CREATE INDEX idx_order_cache_payment_method  ON order_cache(payment_method);
 CREATE INDEX idx_order_cache_delivery_person ON order_cache(delivery_person_id);
-CREATE INDEX idx_settlements_vendor_id ON settlements(vendor_id);
-CREATE INDEX idx_settlements_status ON settlements(status);
-CREATE INDEX idx_settlements_period ON settlements(period_start, period_end);
+CREATE INDEX idx_settlements_vendor_id       ON settlements(vendor_id);
+CREATE INDEX idx_settlements_status          ON settlements(status);
+CREATE INDEX idx_settlements_period          ON settlements(period_start, period_end);
 CREATE INDEX idx_delivery_attendance_person_date ON delivery_attendance(delivery_person_id, attendance_date);
-CREATE INDEX idx_delivery_attendance_date ON delivery_attendance(attendance_date);
+CREATE INDEX idx_delivery_attendance_date    ON delivery_attendance(attendance_date);
+
+-- ── 6. Grant table permissions to app user ──────────────────────────
+GRANT ALL ON ALL TABLES    IN SCHEMA public TO quickverse_user;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO quickverse_user;

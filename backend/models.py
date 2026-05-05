@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, DateTime, Numeric, ForeignKey, CheckConstraint
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, DateTime, Numeric, Float, ForeignKey, CheckConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from database import Base
@@ -15,6 +15,8 @@ class Vendor(Base):
     store_category = Column(String(100), default="")
     custom_commission_percent = Column(Numeric(5, 2), nullable=True)
     notes = Column(Text, default="")
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
