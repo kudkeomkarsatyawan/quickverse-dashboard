@@ -1,4 +1,5 @@
 import os
+import asyncio
 import httpx
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -6,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 BASE_URL = os.getenv("ADMIN_DECK_BASE_URL", "http://prd.quickverse.in/quickVerse")
-BASIC_AUTH = "Basic cXZDYXN0bGVFbnRyeTpjYSR0bGVfUGVybWl0QDAx"
+BASIC_AUTH = os.getenv("ADMIN_DECK_BASIC_AUTH", "Basic cXZDYXN0bGVFbnRyeTpjYSR0bGVfUGVybWl0QDAx")
 
 # Common headers matching the admin deck app
 COMMON_HEADERS = {
@@ -179,87 +180,159 @@ def _extract_orders_list(payload: dict) -> list:
 
 # ─── Public entry point ──────────────────────────────────────────────
 
+def _parse_shops_from_response(data: dict) -> tuple:
+    """Return (shops_list, result_obj) from an API response dict."""
+    if not isinstance(data, dict):
+        return [], {}
+    result_obj = data.get("result")
+    if not isinstance(result_obj, dict):
+        inner = data.get("response") or {}
+        result_obj = inner.get("result") if isinstance(inner, dict) else None
+        if not isinstance(result_obj, dict):
+            result_obj = {}
+    shops = result_obj.get("shops", [])
+    return (shops if isinstance(shops, list) else []), result_obj
+
+
+def _flatten_shops_to_raw(shops: list) -> list:
+    """Flatten a shops array into a flat list of raw order dicts."""
+    raw = []
+    for shop in shops:
+        if not isinstance(shop, dict):
+            continue
+        shop_id = shop.get("shopId") or (shop.get("shopDetails") or {}).get("shopId")
+        shop_name = shop.get("shopName") or (shop.get("shopDetails") or {}).get("name", "")
+        for o in (shop.get("orders") or []):
+            if not isinstance(o, dict):
+                continue
+            if not o.get("shopId") and not o.get("vendorId"):
+                o = {**o, "shopId": shop_id}
+            if not o.get("shopName") and not o.get("vendorName"):
+                o = {**o, "shopName": shop_name}
+            raw.append(o)
+    return raw
+
+
 async def fetch_orders(region_id: str, session_key: str, time_range: str = "TODAY") -> list:
     """
     Fetch orders from /v2/order/region-orders.
 
-    Actual API response shape (confirmed via debug):
-      { "result": { "shops": [ { "shopId": "...", "shopName": "...", "orders": [...] } ] } }
+    Strategy
+    --------
+    1. Primary call: send LAST_1_MONTH (or TODAY) with a large pageSize so we
+       get as many orders as the API allows in one shot.  Also send both
+       page=0 and pageNo=1 to cover either 0-indexed or 1-indexed pagination.
 
-    Orders are grouped by shop/vendor; we flatten them into a single list and
-    inject shopId from the parent shop object so downstream code can join with
-    the vendors table.
+    2. Pagination loop: if result_obj carries hasNextPage / totalCount, walk
+       the pages.  Stop when we get zero new unique orders on a page.
+
+    3. Date-chunking (LAST_1_MONTH only): many APIs cap their timeRange
+       responses to the most recent N orders.  To guarantee full coverage we
+       fire one parallel request per day for the last 30 days using an ISO
+       date string (YYYY-MM-DD) as timeRange — a common alternative the
+       Quickverse API supports.  Batched in groups of 5 to be API-friendly.
+       All results are merged with deduplication so nothing is double-counted.
     """
-    url = f"{BASE_URL}/v2/order/region-orders?regionId={region_id}&timeRange={time_range}"
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.get(url, headers=_headers(SessionKey=session_key))
-        resp.raise_for_status()
-        data = resp.json()
-
-    print(f"[fetch_orders] timeRange={time_range} top-level keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
-    _check_api_error(data)
-
-    # ── Extract the shops list ───────────────────────────────────────
-    # Primary shape:  {"result": {"shops": [...]}}
-    # Fallback shape: {"response": {"result": {"shops": [...]}}}
-    result_obj = data.get("result") if isinstance(data, dict) else None
-    if not isinstance(result_obj, dict):
-        inner = data.get("response", {}) if isinstance(data, dict) else {}
-        result_obj = inner.get("result", {}) if isinstance(inner, dict) else {}
-
-    shops = result_obj.get("shops", []) if isinstance(result_obj, dict) else []
-    print(f"[fetch_orders] shops in response: {len(shops)}")
-
-    # ── Flatten vendor-grouped orders ────────────────────────────────
-    raw_list: list = []
-    if isinstance(shops, list):
-        for shop in shops:
-            if not isinstance(shop, dict):
-                continue
-            shop_id = (
-                shop.get("shopId")
-                or (shop.get("shopDetails") or {}).get("shopId")
-            )
-            shop_name = (
-                shop.get("shopName")
-                or (shop.get("shopDetails") or {}).get("name", "")
-            )
-            orders_in_shop = shop.get("orders") or []
-            if not isinstance(orders_in_shop, list):
-                continue
-            for o in orders_in_shop:
-                if not isinstance(o, dict):
-                    continue
-                # Inject parent-shop fields so _normalise_order can pick them up
-                if not o.get("shopId") and not o.get("vendorId"):
-                    o = {**o, "shopId": shop_id}
-                if not o.get("shopName") and not o.get("vendorName"):
-                    o = {**o, "shopName": shop_name}
-                raw_list.append(o)
-
-    print(f"[fetch_orders] {len(raw_list)} raw orders before dedup/normalise")
-
-    # ── Deduplicate and normalise ────────────────────────────────────
     seen:   set  = set()
     merged: list = []
-    for o in raw_list:
-        oid = str(o.get("orderId") or o.get("id") or "")
-        if not oid or oid in seen:
-            continue
-        seen.add(oid)
-        merged.append(_normalise_order(o))
 
-    print(f"[fetch_orders] returning {len(merged)} normalised orders")
+    def _add_unique(raw_list: list) -> int:
+        added = 0
+        for o in raw_list:
+            oid = str(o.get("orderId") or o.get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                merged.append(_normalise_order(o))
+                added += 1
+        return added
+
+    # ── 1 & 2: Primary fetch with pagination ────────────────────────────
+    page_no = 1
+    while page_no <= 50:
+        url = (
+            f"{BASE_URL}/v2/order/region-orders"
+            f"?regionId={region_id}"
+            f"&timeRange={time_range}"
+            f"&page={page_no - 1}&pageNo={page_no}"
+            f"&pageSize=1000&size=1000&limit=1000"
+        )
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(url, headers=_headers(SessionKey=session_key))
+            resp.raise_for_status()
+            data = resp.json()
+
+        print(f"[fetch_orders] timeRange={time_range} pageNo={page_no} keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+        _check_api_error(data)
+
+        shops, result_obj = _parse_shops_from_response(data)
+        raw = _flatten_shops_to_raw(shops)
+        page_new = _add_unique(raw)
+
+        non_shop = {k: v for k, v in result_obj.items() if k != "shops"} if result_obj else {}
+        print(f"[fetch_orders] pageNo={page_no} shops={len(shops)} +{page_new} new (total={len(merged)}) meta={non_shop}")
+
+        has_next = result_obj.get("hasNextPage") or result_obj.get("hasMore") or result_obj.get("nextPage")
+        total_count = result_obj.get("totalCount") or result_obj.get("total") or result_obj.get("totalOrders")
+
+        if has_next:
+            page_no += 1
+            continue
+        if total_count and isinstance(total_count, int) and len(merged) < total_count:
+            page_no += 1
+            continue
+        if page_new == 0:
+            break
+        page_no += 1
+
+    print(f"[fetch_orders] primary fetch done: {len(merged)} orders after {page_no} page(s)")
+
+    # ── 3: Date-chunking supplement for LAST_1_MONTH ────────────────────
+    # Fire one request per day for the last 30 days using ISO date strings.
+    # This covers the full month even when the LAST_1_MONTH keyword only
+    # returns a capped/recent slice from the API.
+    if time_range == "LAST_1_MONTH":
+        today = datetime.utcnow().date()
+        dates = [(today - timedelta(days=i)).isoformat() for i in range(30)]
+
+        async def _fetch_one_date(d: str) -> list:
+            url = (
+                f"{BASE_URL}/v2/order/region-orders"
+                f"?regionId={region_id}&timeRange={d}"
+                f"&pageSize=1000&size=1000&limit=1000"
+            )
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    resp = await client.get(url, headers=_headers(SessionKey=session_key))
+                    if not resp.is_success:
+                        return []
+                    data = resp.json()
+                if not isinstance(data, dict):
+                    return []
+                shops, _ = _parse_shops_from_response(data)
+                return _flatten_shops_to_raw(shops)
+            except Exception as e:
+                print(f"[fetch_orders] date {d} error: {e}")
+                return []
+
+        BATCH = 5
+        for batch_start in range(0, len(dates), BATCH):
+            batch = dates[batch_start: batch_start + BATCH]
+            results = await asyncio.gather(*[_fetch_one_date(d) for d in batch])
+            batch_added = sum(_add_unique(r) for r in results)
+            if batch_added:
+                print(f"[fetch_orders] date batch {batch_start // BATCH + 1} ({batch[0]}→{batch[-1]}): +{batch_added} new (total={len(merged)})")
+
+    print(f"[fetch_orders] returning {len(merged)} total orders")
     return merged
 
 
-async def fetch_order_details(order_id: str) -> dict:
+async def fetch_order_details(order_id: str, session_key: str = None) -> dict:
     """Fetch single order details including shop info."""
+    auth_headers = _headers(SessionKey=session_key) if session_key else _headers(Authorization=BASIC_AUTH)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(
             f"{BASE_URL}/v2/order/{order_id}",
-            headers=_headers(Authorization=BASIC_AUTH),
+            headers=auth_headers,
         )
         resp.raise_for_status()
         data = resp.json()

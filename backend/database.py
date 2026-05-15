@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:Omkar.22@localhost:5432/quickverse")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://quickverse_user:quickverse_pass@localhost:5432/quickverse")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)

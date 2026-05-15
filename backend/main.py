@@ -363,6 +363,55 @@ async def _do_sync(region_id: str, session_key: str, time_range: str):
             if new_records:
                 db.bulk_save_objects(new_records)
             db.commit()
+
+            # The Smartbiz region-orders endpoint only returns active (non-completed)
+            # orders. When an order is delivered in Smartbiz it drops off the response,
+            # so our DB never receives the state update and the order stays stuck as
+            # SHIPPED or PENDING on the live map. For TODAY syncs we detect these
+            # "disappeared" active orders and fetch their current state individually.
+            if time_range == "TODAY":
+                active_states = ["PENDING", "ACCEPTED", "PACKED", "SHIPPED"]
+                today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                incoming_id_set = {str(o.get("orderId", "")) for o in orders if o.get("orderId")}
+
+                stale_query = db.query(OrderCache).filter(
+                    OrderCache.creation_time >= today_start,
+                    OrderCache.state.in_(active_states),
+                )
+                if incoming_id_set:
+                    stale_query = stale_query.filter(
+                        ~OrderCache.order_id.in_(incoming_id_set)
+                    )
+                # Cap at 30 to avoid a flood of individual API calls per sync cycle
+                stale_actives = stale_query.limit(30).all()
+
+                updated_stale = 0
+                for stale in stale_actives:
+                    try:
+                        details = await admin_deck.fetch_order_details(
+                            stale.order_id, session_key=session_key
+                        )
+                        order_obj = details.get("order", {})
+                        new_state = str(
+                            order_obj.get("state") or order_obj.get("status") or ""
+                        ).strip().upper()
+                        if new_state and new_state != stale.state:
+                            stale.state = new_state
+                            stale.synced_at = datetime.utcnow()
+                            completed_raw = order_obj.get("completedDate")
+                            if completed_raw and not stale.completed_date:
+                                stale.completed_date = _parse_dt(completed_raw)
+                            rejected_raw = order_obj.get("rejectedDate")
+                            if rejected_raw and not stale.rejected_date:
+                                stale.rejected_date = _parse_dt(rejected_raw)
+                            updated_stale += 1
+                    except Exception as stale_err:
+                        print(f"[_do_sync] stale-check failed for {stale.order_id}: {stale_err}")
+
+                if updated_stale:
+                    db.commit()
+                    print(f"[_do_sync] corrected {updated_stale} stale active orders")
+
             synced = len(orders) - skipped
             _sync_state["result"] = {"synced": synced, "total_fetched": len(orders)}
         finally:
