@@ -44,16 +44,16 @@ cd quickverse-dashboard
 
 ### Step 2 — Set up the database
 
-Run the setup script as the PostgreSQL superuser. It creates the `quickverse_user` role, the `quickverse` database, all tables, and seed data in one shot.
+Run the setup script as the PostgreSQL superuser. It creates the `quickverse_user` role, the `quickverse` database, all tables, indexes, and seed data in one shot.
 
 **Windows (PowerShell / Command Prompt):**
 ```powershell
-psql -U postgres -f database\setup.sql
+psql -U postgres -f init_db.sql
 ```
 
 **Mac / Linux:**
 ```bash
-psql -U postgres -f database/setup.sql
+psql -U postgres -f init_db.sql
 ```
 
 > You will be prompted for the `postgres` superuser password (the one you chose during PostgreSQL installation).
@@ -140,8 +140,7 @@ quickverse-dashboard/
 │   ├── database.py       # DB engine and session factory
 │   ├── admin_deck.py     # External Quickverse API client
 │   └── requirements.txt
-├── database/
-│   └── setup.sql         # One-shot DB + schema + seed script
+├── init_db.sql           # One-shot DB + schema + seed script
 ├── frontend/
 │   ├── src/
 │   │   ├── lib/api.ts    # All backend API calls (axios)
@@ -174,7 +173,7 @@ PostgreSQL is not running. Start it via the Services panel (Windows) or `brew se
 Your virtual environment is not activated. Run `venv\Scripts\activate` (Windows) or `source venv/bin/activate` (Mac/Linux) first.
 
 **`relation "vendors" does not exist`**
-The setup script did not run successfully. Repeat Step 2.
+`init_db.sql` did not run successfully. Repeat Step 2.
 
 **Frontend shows blank page or network errors**
 Ensure the backend (`uvicorn`) is running on port 8000 before starting the frontend. The Vite dev server proxies all `/api` requests to `localhost:8000`.
